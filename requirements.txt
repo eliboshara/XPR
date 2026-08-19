@@ -1,0 +1,5 @@
+mendeleev>=0.14.0
+juliacall>=0.9.14
+biopython>=1.81
+numpy>=1.24.0
+matplotlib>=3.7.0
