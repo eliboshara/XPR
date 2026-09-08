@@ -63,7 +63,7 @@ class XPRsim:
         # protein parameters (1-4)
         if self.include_protein:
             self.param_names.extend(["theta (deg)", "phi (deg)", "d_protein", "coverage_C"])
-            self.bounds.extend([(0.0, 180.0), (0.0, 360.0), (0.0, 20.0), (0.0, 10.0)])
+            self.bounds.extend([(0.0, 180.0), (0.0, 360.0), (-20.0, 20.0), (0.0, 10.0)])
             self.active_indices.extend([1, 2, 3, 4])
             
         # optional fitting parameters (5-7)
@@ -96,6 +96,16 @@ class XPRsim:
             
         self.bounds = np.array(self.bounds)
         self.total_julia_params = 8 + 2 * self.num_boxes
+        
+        # map parameter names to array indices for fast lookup
+        self.param_map = {name: idx for idx, name in enumerate(self.param_names)}
+
+    def update_bounds(self, bounds_dict):
+        for name, bound in bounds_dict.items():
+            if name in self.param_map:
+                self.bounds[self.param_map[name]] = bound
+            else:
+                raise KeyError(f"parameter '{name}' is inactive or undefined.")
 
      # outputs the expected parameter order for the user
     def _print_configuration(self):
@@ -142,7 +152,7 @@ class XPRsim:
         if self.include_protein:
             if not os.path.isfile(self.pdb_file):
                 raise FileNotFoundError(f"PDB file '{self.pdb_file}' not found.")
-            coord, electrons, radii = self._import_pdb(self.pdb_file)
+            coord, electrons, radii, masses = self._import_pdb(self.pdb_file)
             
         # convert to Julia arrays
         j_Q = convert(jl.Array, self.data_Q)
@@ -159,6 +169,7 @@ class XPRsim:
             kwargs["coordinates_py"] = convert(jl.Array, coord)
             kwargs["electrons_py"] = convert(jl.Array, electrons)
             kwargs["radii_py"] = convert(jl.Array, radii)
+            kwargs["masses_py"] = convert(jl.Array, masses)
             
         jl.load_data(j_Q, j_R, j_err, self.num_boxes, self.include_protein, 
                      self.fit_sig, self.fit_yscl, self.fit_bkg, **kwargs)
@@ -166,8 +177,8 @@ class XPRsim:
     # returns the log-likelihood and simulated reflectivity
     def eval_logL(self, params):
         full_params = self._pad_params(params)
-        logL, R = jl.XPR_sim_ref(full_params)
-        return logL, np.array(R)
+        logL, R, protein_height = jl.XPR_sim_ref(full_params)
+        return logL, np.array(R), protein_height
 
     # returns the gradient vector, stripped of fixed parameters
     def eval_grad(self, params):
@@ -195,10 +206,10 @@ class XPRsim:
     def _import_pdb(fname):
         try:
             from mendeleev.fetch import fetch_table
-            ptable = fetch_table('elements')[['symbol', 'atomic_number', 'vdw_radius']]
+            ptable = fetch_table('elements')[['symbol', 'atomic_number', 'vdw_radius', 'atomic_weight']]
         except ImportError:
             from mendeleev import get_table
-            ptable = get_table('elements')[['symbol', 'atomic_number', 'vdw_radius']]
+            ptable = get_table('elements')[['symbol', 'atomic_number', 'vdw_radius', 'atomic_weight']]
             
         atominfo = ptable.set_index('symbol').T.to_dict('list')
         pdbparser = Bio.PDB.PDBParser(QUIET=True)
@@ -209,11 +220,13 @@ class XPRsim:
         coord = np.zeros((n_atoms, 3))
         radii = np.zeros(n_atoms)
         electrons = np.zeros(n_atoms)
+        masses = np.zeros(n_atoms)
 
         for ind, atom in enumerate(atoms):
             coord[ind, :] = atom.coord
             element_key = 'Ca' if atom.name == 'CAL' else atom.element
             electrons[ind] = atominfo[element_key][0]
             radii[ind] = atominfo[element_key][1] / 100.0
+            masses[ind] = atominfo[atom.element][2]
 
-        return coord, electrons, radii
+        return coord, electrons, radii, masses
