@@ -227,6 +227,6 @@ class XPRsim:
             element_key = 'Ca' if atom.name == 'CAL' else atom.element
             electrons[ind] = atominfo[element_key][0]
             radii[ind] = atominfo[element_key][1] / 100.0
-            masses[ind] = atominfo[atom.element][2]
+            masses[ind] = atominfo[element_key][2]
 
         return coord, electrons, radii, masses
