@@ -201,7 +201,7 @@ class XPRsim:
         rrf_proc = rrf[np.where(rrf[:, 0] >= 0.026), :][0,:,:]
         return rrf_proc[:,0], rrf_proc[:,1], rrf_proc[:,2]
 
-    # pdg import method
+    # pdb import method
     @staticmethod
     def _import_pdb(fname):
         try:
