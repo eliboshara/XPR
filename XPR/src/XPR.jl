@@ -21,6 +21,7 @@ struct SimData
     coordinates::Matrix{Float64}
     electrons::Vector{Float64}
     radii::Vector{Float64}
+    prot_extent::Float64
     ρ_top::Float64
     ρ_bottom::Float64
     xray_energy::Float64
@@ -166,7 +167,8 @@ end
 # called once from python at beginning of simulations to import data and load into global data structures
 function load_data(data_Q_py, data_R_py, data_err_py, num_boxes, include_protein, fit_sig, fit_yscl, fit_bkg;
     coordinates_py=nothing, electrons_py=nothing, radii_py=nothing, masses_py=nothing, 
-    vol_calc = "approx", rho_top=0.0, rho_bottom=0.334, max_box_length=30.0, d_protein_bounds=(-30.0, 30.0), sig_max=5.0)
+    vol_calc = "approx", rho_top=0.0, rho_bottom=0.334, max_box_length=30.0, d_protein_bounds=(-30.0, 30.0), 
+    sig_max=5.0, spacez=0.5, min_box_length_sum=0.0)
     
     # reset as needed
     reset_data()
@@ -189,10 +191,10 @@ function load_data(data_Q_py, data_R_py, data_err_py, num_boxes, include_protein
         masses = [1.0]
     end
  
-    # preallocate 
     simdata, areavars = prealloc(data_Q, data_R, data_err, num_boxes, include_protein, 
                                     fit_sig, fit_yscl, fit_bkg, coordinates, electrons, radii, masses, 
-                                    vol_calc, rho_top, rho_bottom, max_box_length, d_protein_bounds, sig_max)
+                                    vol_calc, rho_top, rho_bottom, max_box_length, d_protein_bounds, 
+                                    sig_max, spacez, min_box_length_sum)
     GLOBAL_SD[] = simdata
     GLOBAL_AV[] = areavars
 
@@ -202,12 +204,11 @@ end
 # preallocate memory for simulation data and area computation
 function prealloc(data_Q, data_R, data_err, num_boxes, include_protein, 
                     fit_sig, fit_yscl, fit_bkg,  coordinates, electrons, radii, masses, 
-                    vol_calc, rho_top, rho_bottom, max_box_length, d_protein_bounds, sig_max)
+                    vol_calc, rho_top, rho_bottom, max_box_length, d_protein_bounds, 
+                    sig_max, spacez, min_box_length_sum)
 
     N = include_protein ? length(radii) : 1                                                  # number of atoms in protein
-    L = length(data_Q)                                                                       # length of data set
-
-    spacez = 0.5                                                                             # vertical spacing of grid (Angstroms)
+    L = length(data_Q)                                                                       # length of data set                                                                           # vertical spacing of grid (Angstroms)
 
     # given data
     ρ_top        = rho_top                                                                   # electron density of the air
@@ -245,7 +246,7 @@ function prealloc(data_Q, data_R, data_err, num_boxes, include_protein,
 
         # relevant cell counts
         dmin, dmax = d_protein_bounds
-        top_cells = ceil(Int, max(0.0, dmax + prot_extent) / spacez)
+        top_cells = ceil(Int, max(0.0, dmax + prot_extent - min_box_length_sum) / spacez)
         bottom_cells = ceil(Int, max(0.0, prot_extent - dmin) / spacez)
 
     else
@@ -253,6 +254,7 @@ function prealloc(data_Q, data_R, data_err, num_boxes, include_protein,
         cell_size = 1.0
         top_cells = 0
         bottom_cells = 0
+        prot_extent = 0.0
     end
 
     cells_per_box = ceil(Int, max_box_length / spacez)
@@ -276,6 +278,7 @@ function prealloc(data_Q, data_R, data_err, num_boxes, include_protein,
         coordinates,
         electrons,
         radii,
+        prot_extent,
         ρ_top,
         ρ_bottom,
         xray_energy,
@@ -1180,8 +1183,16 @@ function XPR!(params)
     box_densities = params[nbox+9: 2*nbox+8]
     
     if simdata.include_protein
-        # rotate the protein and align z-height
         protein_height = rotate_protein!(simdata, tempvars, θ, ϕ, d_protein, box_lengths)
+        
+        sum_d = sum(box_lengths)
+        z_top = d_protein + simdata.prot_extent - sum_d
+        z_bot = d_protein - simdata.prot_extent - sum_d
+        
+        # test against the true physical grid limits
+        if z_top > simdata.top_cells * simdata.spacez || z_bot < -sum_d - simdata.bottom_cells * simdata.spacez
+            error("protein out of bounds")
+        end
     else
         protein_height = 0.0
     end

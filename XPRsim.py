@@ -13,16 +13,19 @@ class XPRsim:
     Handles data loading, parameter masking, and bounds checking, function evals
     """
     def __init__(self, 
-                 rrf_file, 
-                 num_boxes, 
-                 pdb_file=None, 
-                 fit_sig=False, 
-                 fit_yscl=False, 
-                 fit_bkg=False, 
-                 vol_calc="approx", 
-                 rho_top=0.0, 
-                 rho_bottom=0.334):
-        
+                rrf_file, 
+                num_boxes, 
+                pdb_file=None, 
+                fit_sig=False, 
+                fit_yscl=False, 
+                fit_bkg=False, 
+                vol_calc="approx", 
+                rho_top=0.0, 
+                rho_bottom=0.334,
+                spacez=0.5):
+    
+        # assign spacez and existing parameters
+        self.spacez = spacez
         self.rrf_file = rrf_file
         self.pdb_file = pdb_file
         self.num_boxes = num_boxes
@@ -102,31 +105,28 @@ class XPRsim:
         self.param_map = {name: idx for idx, name in enumerate(self.param_names)}
 
     def _get_allocation_bounds(self):
-        """
-        return the parameter-domain quantities needed by Julia to construct
-        the fixed mesh
-        """
 
-        # largest allowed box thickness across all boxes
+        # calculate minimum/max possible box length sum for preallocation limits
+        min_box_length_sum = sum(
+            float(self.bounds[self.param_map[f"box_length_{i+1}"], 0]) for i in range(self.num_boxes)
+        )
         max_box_length = max(
-            self.bounds[self.param_map[f"box_length_{i+1}"], 1] for i in range(self.num_boxes)
+            float(self.bounds[self.param_map[f"box_length_{i+1}"], 1]) for i in range(self.num_boxes)
         )
 
-        # full allowed d_protein interval
         if self.include_protein:
             idx = self.param_map["d_protein"]
             d_protein_bounds = (float(self.bounds[idx, 0]), float(self.bounds[idx, 1]))
         else:
             d_protein_bounds = (0.0, 0.0)
 
-        # Largest possible sigma
         if self.fit_sig:
             idx = self.param_map["sigma"]
             sig_max = float(self.bounds[idx, 1])
         else:
             sig_max = float(self.fixed_sig)
 
-        return (float(max_box_length), d_protein_bounds, sig_max)
+        return (max_box_length, d_protein_bounds, sig_max, min_box_length_sum)
 
     def update_bounds(self, bounds_dict):
 
@@ -207,16 +207,17 @@ class XPRsim:
         j_err = convert(jl.Array, self.data_err)
         
         # determine parameter-domain bounds needed for fixed Julia allocation
-        max_box_length, d_protein_bounds, sig_max = self._get_allocation_bounds()
+        max_box_length, d_protein_bounds, sig_max, min_box_length_sum = self._get_allocation_bounds()
 
-        # keyword arguments for Julia call
         kwargs = {
             "vol_calc": self.vol_calc,
             "rho_top": self.rho_top,
             "rho_bottom": self.rho_bottom,
             "max_box_length": max_box_length,
             "d_protein_bounds": d_protein_bounds,
-            "sig_max": sig_max
+            "sig_max": sig_max,
+            "spacez": self.spacez,
+            "min_box_length_sum": min_box_length_sum
         }
 
         if self.include_protein:
@@ -278,7 +279,7 @@ class XPRsim:
 
         for ind, atom in enumerate(atoms):
             coord[ind, :] = atom.coord
-            element_key = 'Ca' if atom.name == 'CAL' else atom.element
+            element_key = 'Ca' if atom.name == 'CAL' else atom.element.capitalize()
             electrons[ind] = atominfo[element_key][0]
             radii[ind] = atominfo[element_key][1] / 100.0
             masses[ind] = atominfo[element_key][2]
