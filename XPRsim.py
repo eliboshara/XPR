@@ -22,10 +22,11 @@ class XPRsim:
                 vol_calc="approx", 
                 rho_top=0.0, 
                 rho_bottom=0.334,
-                spacez=0.5):
+                spacez=0.5,
+                fres_norm=True):
     
         # assign spacez and existing parameters
-        self.spacez = spacez
+        
         self.rrf_file = rrf_file
         self.pdb_file = pdb_file
         self.num_boxes = num_boxes
@@ -36,6 +37,8 @@ class XPRsim:
         self.vol_calc = vol_calc
         self.rho_top = rho_top
         self.rho_bottom = rho_bottom
+        self.spacez = spacez
+        self.fres_norm = fres_norm
         
         # fixed baseline parameters
         self.fixed_sig = 3.4
@@ -217,7 +220,8 @@ class XPRsim:
             "d_protein_bounds": d_protein_bounds,
             "sig_max": sig_max,
             "spacez": self.spacez,
-            "min_box_length_sum": min_box_length_sum
+            "min_box_length_sum": min_box_length_sum,
+            "fres_norm": self.fres_norm
         }
 
         if self.include_protein:

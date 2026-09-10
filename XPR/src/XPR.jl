@@ -38,6 +38,7 @@ struct SimData
     top_cells::Int
     bottom_cells::Int
     tail_cells::Int
+    smear_change_idxs::Vector{Int}
     include_protein::Bool
     fit_sig::Bool
     fit_yscl::Bool
@@ -168,7 +169,7 @@ end
 function load_data(data_Q_py, data_R_py, data_err_py, num_boxes, include_protein, fit_sig, fit_yscl, fit_bkg;
     coordinates_py=nothing, electrons_py=nothing, radii_py=nothing, masses_py=nothing, 
     vol_calc = "approx", rho_top=0.0, rho_bottom=0.334, max_box_length=30.0, d_protein_bounds=(-30.0, 30.0), 
-    sig_max=5.0, spacez=0.5, min_box_length_sum=0.0)
+    sig_max=5.0, spacez=0.5, min_box_length_sum=0.0, fres_norm=true)
     
     # reset as needed
     reset_data()
@@ -194,7 +195,7 @@ function load_data(data_Q_py, data_R_py, data_err_py, num_boxes, include_protein
     simdata, areavars = prealloc(data_Q, data_R, data_err, num_boxes, include_protein, 
                                     fit_sig, fit_yscl, fit_bkg, coordinates, electrons, radii, masses, 
                                     vol_calc, rho_top, rho_bottom, max_box_length, d_protein_bounds, 
-                                    sig_max, spacez, min_box_length_sum)
+                                    sig_max, spacez, min_box_length_sum, fres_norm)
     GLOBAL_SD[] = simdata
     GLOBAL_AV[] = areavars
 
@@ -205,10 +206,10 @@ end
 function prealloc(data_Q, data_R, data_err, num_boxes, include_protein, 
                     fit_sig, fit_yscl, fit_bkg,  coordinates, electrons, radii, masses, 
                     vol_calc, rho_top, rho_bottom, max_box_length, d_protein_bounds, 
-                    sig_max, spacez, min_box_length_sum)
+                    sig_max, spacez, min_box_length_sum, fres_norm)
 
     N = include_protein ? length(radii) : 1                                                  # number of atoms in protein
-    L = length(data_Q)                                                                       # length of data set                                                                           # vertical spacing of grid (Angstroms)
+    L = length(data_Q)                                                                       # length of data set
 
     # given data
     ρ_top        = rho_top                                                                   # electron density of the air
@@ -218,7 +219,7 @@ function prealloc(data_Q, data_R, data_err, num_boxes, include_protein,
     r_electron   = 2.818e-5                                                                  # classic radius of an electron
 
     # include Fresnel normalization
-    fres = true
+    fres = fres_norm
     
     max_sd_away = 10        # how many standard deviations away from interface we extend smearing
 
@@ -270,6 +271,26 @@ function prealloc(data_Q, data_R, data_err, num_boxes, include_protein,
     # number of boundaries in the final smearing lattice
     max_refl_slabs = (max_ed_slabs - 1) + 2 * tail_cells
 
+    # precompute nonzero smearing indices 
+    if include_protein
+        first_change = tail_cells + 1
+        last_change = tail_cells + physical_cells + 1
+        smear_change_idxs = collect(max(2, first_change):min(max_refl_slabs - 1, last_change))
+    else
+        smear_change_idxs = Int[]
+        sizehint!(smear_change_idxs, num_boxes + 1)
+        j = tail_cells + bottom_cells + 1 
+        for b in num_boxes:-1:1
+            if 2 <= j <= max_refl_slabs - 1
+                push!(smear_change_idxs, j)
+            end
+            j += box_cells[b]
+        end
+        if 2 <= j <= max_refl_slabs - 1
+            push!(smear_change_idxs, j)   
+        end
+    end
+
     # create instance of simulation data
     simdata = SimData(
         data_Q,
@@ -295,6 +316,7 @@ function prealloc(data_Q, data_R, data_err, num_boxes, include_protein,
         top_cells,
         bottom_cells,
         tail_cells,
+        smear_change_idxs,
         include_protein,
         fit_sig,
         fit_yscl,
@@ -1085,10 +1107,11 @@ function smear_xy_interface!(simdata, tempvars, box_densities, C, M)
     return B
 end
 
-# evaluated the Gaussian-smeared profile at z (scalar or vector) using hard-interface x and y values, and smearing factor
-function eval_smeared!(tempvars, B, sig)
+# evaluate the Gaussian-smeared profile using only structurally nonzero hard-profile jumps
+function eval_smeared!(simdata, tempvars, B, sig)
 
     μ = view(tempvars.μ, 1:(B-1))
+    change_idxs = simdata.smear_change_idxs
 
     T = eltype(tempvars.smear_lattice)
     sqrt2sig = sqrt(T(2))*sig
@@ -1098,9 +1121,11 @@ function eval_smeared!(tempvars, B, sig)
         zi = tempvars.w_mid[i]
         ρ1 = zero(T)
         ρ2 = zero(T)
-        @simd for j = 2:(B-1)
-            ρ1 += (tempvars.ρ_hard_z[j] - tempvars.ρ_hard_z[j-1]) * erf((zi - tempvars.smear_lattice[j]) / sqrt2sig)
-            ρ2 += (μ[j] - μ[j-1]) * erf((zi - tempvars.smear_lattice[j]) / sqrt2sig)
+        @simd for k in eachindex(change_idxs)
+            j = change_idxs[k]
+            e = erf((zi - tempvars.smear_lattice[j]) / sqrt2sig)
+            ρ1 += (tempvars.ρ_hard_z[j] - tempvars.ρ_hard_z[j-1]) * e
+            ρ2 += (μ[j] - μ[j-1]) * e
         end
         ρ1 += (tempvars.ρ_hard_z[1] + tempvars.ρ_hard_z[(B-1)])
         ρ2 += (μ[1] + μ[(B-1)])
@@ -1213,7 +1238,7 @@ function XPR!(params)
     B = smear_xy_interface!(simdata, tempvars, box_densities, C, M)
 
     # evaluate the smeared ρ and μs
-    eval_smeared!(tempvars, B, sig)
+    eval_smeared!(simdata, tempvars, B, sig)
 
     # reflectivity computaiton
     reflectivity!(simdata, tempvars, q_offset, B, yscl, bkg)
@@ -1256,6 +1281,7 @@ end
 
 ####### exported functions #######
 
+export reset_data
 export load_data
 export XPR_sim_ref
 export XPR_grad
